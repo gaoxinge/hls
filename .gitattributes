@@ -1,0 +1,3 @@
+tests/fixtures/media/**/*.ts binary
+tests/fixtures/media/**/*.m4s binary
+tests/fixtures/media/**/*.mp4 binary

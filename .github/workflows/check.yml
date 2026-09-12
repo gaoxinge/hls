@@ -1,0 +1,69 @@
+name: Check and release extension
+on:
+  push:
+    branches: ["**"]
+    tags: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm run test:e2e
+      - run: npm run zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hls-chrome-extension
+          path: .output/*-chrome.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish Chrome extension
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: verify
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    concurrency:
+      group: extension-release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hls-chrome-extension
+          path: release-assets
+      - name: Validate and publish ZIP
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release-assets/*-chrome.zip)
+          if [ "${#assets[@]}" -ne 1 ]; then
+            echo "Expected exactly one Chrome extension ZIP" >&2
+            exit 1
+          fi
+          unzip -t "${assets[0]}"
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --verify-tag --title "$RELEASE_TAG" --generate-notes
+          fi

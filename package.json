@@ -1,0 +1,39 @@
+{
+  "name": "hls-browser-downloader",
+  "private": true,
+  "version": "2.0.1",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "postinstall": "wxt prepare",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:e2e": "node tests/e2e/generate.mjs && node tests/e2e/run.mjs && node tests/e2e/resilience.mjs && node tests/e2e/v2.mjs && node tests/e2e/export.mjs",
+    "test:large": "node tests/e2e/generate.mjs --large && node tests/e2e/resilience.mjs --large && node tests/e2e/v2.mjs --large",
+    "format": "prettier --write src entrypoints tests *.ts *.js package.json tsconfig.json"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.51.1",
+    "@types/chrome": "0.1.43",
+    "@types/node": "22.20.2",
+    "eslint": "9.39.5",
+    "fake-indexeddb": "6.2.5",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.0",
+    "vitest": "3.2.7",
+    "wxt": "0.20.27"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0",
+    "m3u8-parser": "7.2.0",
+    "mp4box": "2.4.1",
+    "mux.js": "6.3.0"
+  }
+}

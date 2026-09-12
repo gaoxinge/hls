@@ -1,0 +1,18 @@
+{
+  "extends": "./.wxt/tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "types": ["chrome", "node"],
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "entrypoints/**/*.ts",
+    "tests/unit/**/*.ts",
+    "*.ts",
+    ".wxt/**/*.d.ts"
+  ],
+  "exclude": ["node_modules", ".output"]
+}

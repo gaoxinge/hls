@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>下载管理 · HLS 下载助手</title>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>下载管理</h1>
+        </div>
+        <button id="refresh" class="secondary">刷新候选</button>
+      </header>
+      <p class="hint">
+        下载和保存期间请保持此页面打开。关闭页面会中断任务，重新打开后可恢复。
+      </p>
+      <label
+        ><input type="checkbox" id="notifications" />
+        发现视频时显示系统通知</label
+      >
+      <p id="error" class="error" role="alert"></p>
+      <h2>下载任务</h2>
+      <section id="tasks" aria-live="polite"></section>
+      <h2>网页中的候选视频</h2>
+      <section id="candidates"></section>
+      <p>
+        v2 支持已结束的 TS 和兼容 fMP4、字节范围及
+        AES-128。暂不支持直播、独立音轨合流、不连续时间线或 DRM。
+      </p>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

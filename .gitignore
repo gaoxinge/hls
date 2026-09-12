@@ -1,4 +1,20 @@
+# Local editor settings
 .idea
+
+# npm dependencies (npm ci)
+node_modules/
+
+# WXT generated configuration and extension build/ZIP output
+# See README: build locally or download the ZIP from GitHub Releases.
+.wxt/
+.output/
+
+# Generated test media, results, and optional reports
+coverage/
+test-results/
+playwright-report/
+
+# Legacy Python caches; not required by the TypeScript extension
 venv
 __pycache__
 *.pyc

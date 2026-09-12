@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>HLS 下载助手</title>
+  </head>
+  <body class="popup">
+    <main>
+      <header>
+        <div>
+          <h1>HLS 下载助手</h1>
+        </div>
+        <button id="manager" class="secondary">下载任务</button>
+      </header>
+      <section id="candidates" aria-live="polite"></section>
+      <p class="hint">
+        仅在点击下载后获取视频。未发现时，请允许网站访问并刷新网页。
+      </p>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

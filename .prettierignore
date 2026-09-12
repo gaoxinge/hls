@@ -1,0 +1,6 @@
+node_modules
+.output
+.wxt
+venv
+test-results
+tests/fixtures/media
