@@ -127,6 +127,8 @@ npm run test:large
 
 [GitHub Actions 工作流](.github/workflows/check.yml)对普通分支推送和 PR 执行检查，成功后保存名为 `hls-chrome-extension` 的 Actions Artifact。该产物可以在对应的 Actions 运行页面下载，下载的外层归档中包含扩展 ZIP，安装前需继续解压扩展 ZIP，定位 `manifest.json`。
 
+上传步骤显式允许读取隐藏的 `.output/` 目录，并将范围限制为 `.output/*-chrome.zip`；`.gitignore` 不影响 Actions 上传，但上传 Action 自身默认忽略隐藏文件。
+
 对 tag 推送，检查成功后还会将**同一次构建**的 Chrome ZIP 上传到对应的 GitHub Release，生成发布说明。ZIP 缺失或损坏会令发布任务失败。已有 Release 的重跑会更新同名 ZIP。
 
 发布步骤：

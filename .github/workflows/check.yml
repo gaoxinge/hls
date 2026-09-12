@@ -11,8 +11,8 @@ jobs:
   verify:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -25,10 +25,12 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npm run test:e2e
       - run: npm run zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: hls-chrome-extension
           path: .output/*-chrome.zip
+          # WXT output is hidden; include only the Chrome ZIP matched above.
+          include-hidden-files: true
           if-no-files-found: error
 
   release:
@@ -42,7 +44,7 @@ jobs:
       group: extension-release-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: hls-chrome-extension
           path: release-assets
