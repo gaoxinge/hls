@@ -9,6 +9,9 @@ export interface Candidate {
   lastSeen: number;
   status: number;
 }
+export interface VisibleCandidate extends Candidate {
+  children?: Candidate[];
+}
 export type {
   KeyContext,
   Segment,

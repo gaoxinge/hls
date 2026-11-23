@@ -43,11 +43,16 @@ export interface Variant {
   audio?: string;
   reason?: string;
 }
+export interface PlaylistReference {
+  url: string;
+  role: "variant" | "iframe" | "rendition";
+}
 export interface Playlist {
   kind: "master" | "media";
   url: string;
   segments: Segment[];
   variants: Variant[];
+  references: PlaylistReference[];
   definitions: Record<string, string>;
   diagnostics: Diagnostic[];
   tags: Source[];

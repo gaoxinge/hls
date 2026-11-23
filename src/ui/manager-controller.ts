@@ -3,7 +3,7 @@ import { candidateCard, element, resourceAddress, send } from "./common";
 import {
   active,
   safeError,
-  type Candidate,
+  type VisibleCandidate,
   type Status,
 } from "../shared/model";
 import { taskService, createTaskRuntime } from "../application/task-service";
@@ -118,17 +118,17 @@ async function renderTasks() {
 }
 async function renderCandidates() {
   const value = new URL(location.href).searchParams.get("tab");
-  const list = await send<Candidate[]>({
+  const list = await send<VisibleCandidate[]>({
     type: "LIST_CANDIDATES",
     ...(value === null ? {} : { tabId: Number(value) }),
   });
   document.querySelector("#candidates")!.replaceChildren(
     ...(list.length
       ? list.map((c) =>
-          candidateCard(c, async (quality, saveAs, selectedUrl) => {
+          candidateCard(c, async (id, quality, saveAs, selectedUrl) => {
             await send({
               type: "START_TASK",
-              id: c.id,
+              id,
               quality,
               saveAs,
               selectedUrl,
@@ -155,7 +155,7 @@ async function start() {
     true;
   await engine.recover();
   await renderTasks();
-  await renderCandidates();
+  void renderCandidates().catch(report);
   setInterval(() => {
     void renderTasks().catch(report);
     void engine.pump().catch(report);

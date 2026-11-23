@@ -1,5 +1,5 @@
 import { prepareDownloads, useNativeDownloads } from "./downloads.mjs";
-import { chromium } from "@playwright/test";
+import { chromium, expect } from "@playwright/test";
 import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 const extension = resolve(".output/chrome-mv3");
 const profile = await mkdtemp(join(tmpdir(), "hls-e2e-"));
 const hits = [];
+const requestMetadata = [];
 const media = await Promise.all(
   [0, 1].map((i) => readFile("tests/fixtures/media/ts/segment" + i + ".ts")),
 );
@@ -23,11 +24,22 @@ function encrypted(index) {
 let cdnPort;
 const cdn = createServer((req, res) => {
   hits.push(req.url);
+  requestMetadata.push({
+    hasCookie: Boolean(req.headers.cookie),
+    hasReferrer: Boolean(req.headers.referer),
+  });
   res.setHeader("Access-Control-Allow-Origin", "*");
   if (req.url.startsWith("/master")) {
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
     res.end(
-      "#EXTM3U\r\n#EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=640x360\r\n/v/low.m3u8\r\n#EXT-X-STREAM-INF:BANDWIDTH=2000,RESOLUTION=1280x720\r\n/v/high.m3u8\r\n",
+      '#EXTM3U\r\n#EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=640x360\r\n/v/low.m3u8\r\n#EXT-X-STREAM-INF:BANDWIDTH=2000,RESOLUTION=1280x720\r\nvideo.m3u8\r\n#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=500,URI="preview.m3u8"\r\n',
+    );
+  } else if (req.url === "/video.m3u8") {
+    res.writeHead(302, { Location: "/v/high.m3u8" });
+    res.end();
+  } else if (req.url === "/preview.m3u8") {
+    res.end(
+      "#EXTM3U\n#EXT-X-VERSION:4\n#EXT-X-TARGETDURATION:1\n#EXT-X-I-FRAMES-ONLY\n#EXTINF:1,\n/segments/iframe\n#EXT-X-ENDLIST",
     );
   } else if (req.url.startsWith("/v/")) {
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
@@ -49,6 +61,11 @@ const cdn = createServer((req, res) => {
 await new Promise((r) => cdn.listen(0, "127.0.0.1", r));
 cdnPort = cdn.address().port;
 const web = createServer((req, res) => {
+  if (req.url.startsWith("/ordinary-redirect")) {
+    res.writeHead(302, { Location: "/landing" });
+    res.end();
+    return;
+  }
   res.setHeader("Content-Type", "text/html");
   res.end(
     `<html><title>HLS fixture</title><button id="play">播放样例</button><script>document.querySelector('button').onclick=()=>fetch('http://127.0.0.1:${cdnPort}/master.m3u8?token=private');</script></html>`,
@@ -78,7 +95,44 @@ try {
   );
   const source = await context.newPage();
   await source.goto(`http://127.0.0.1:${web.address().port}/`);
+  await context.addCookies([
+    {
+      name: "fixture_session",
+      value: "synthetic",
+      url: `http://127.0.0.1:${cdnPort}`,
+    },
+  ]);
+  await worker.evaluate(() => {
+    globalThis.recordedOrdinaryRedirect = false;
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (
+        area === "session" &&
+        JSON.stringify(changes.discovery?.newValue ?? {}).includes(
+          "/ordinary-redirect",
+        )
+      )
+        globalThis.recordedOrdinaryRedirect = true;
+    });
+  });
+  await source.evaluate(() =>
+    fetch("/ordinary-redirect?example=local").then((r) => r.text()),
+  );
   await source.click("#play");
+  await source.evaluate(async (port) => {
+    for (const path of ["video.m3u8", "preview.m3u8"])
+      await fetch("http://127.0.0.1:" + port + "/" + path);
+  }, cdnPort);
+  const sourceTab = await worker.evaluate(
+    async () =>
+      (await chrome.tabs.query({ active: true, currentWindow: true }))[0].id,
+  );
+  const badge = () =>
+    worker.evaluate(
+      (tabId) => chrome.action.getBadgeText({ tabId }),
+      sourceTab,
+    );
+  await expect.poll(badge).toBe("3");
+  const beforeInspection = requestMetadata.length;
   const manager = await context.newPage();
   await manager.goto(`chrome-extension://${id}/manager.html`);
   await useNativeDownloads(context, manager);
@@ -92,8 +146,22 @@ try {
   assert.equal(
     await manager.locator("#candidates .card").count(),
     1,
-    "normal HTML is not a candidate",
+    "only the master remains visible",
   );
+  assert.match(
+    await manager.locator("#candidates h3").innerText(),
+    /master\.m3u8$/,
+  );
+  assert.equal(await badge(), "1");
+  assert.equal(
+    await worker.evaluate(() => globalThis.recordedOrdinaryRedirect),
+    false,
+  );
+  const inspectionRequests = requestMetadata.slice(beforeInspection);
+  assert.ok(inspectionRequests.length > 0);
+  assert.ok(inspectionRequests.every((r) => !r.hasCookie && !r.hasReferrer));
+  assert.ok(!hits.some((x) => x.startsWith("/key") || x.startsWith("/v/low")));
+  const highReads = hits.filter((x) => x === "/v/high.m3u8").length;
   // A repeat request must not create another row.
   await source.click("#play");
   await manager.click("#refresh");
@@ -122,7 +190,7 @@ try {
     Buffer.concat(media),
     "decrypted output matches reference bytes",
   );
-  assert.ok(hits.includes("/v/high.m3u8"));
+  assert.ok(hits.filter((x) => x === "/v/high.m3u8").length > highReads);
   assert.ok(!hits.includes("/v/low.m3u8"));
   assert.equal(hits.filter((x) => x.startsWith("/key")).length, 1);
   assert.equal(await manager.locator('[data-status="completed"]').count(), 1);
@@ -142,6 +210,7 @@ try {
     requests: hits.map((x) => x.split("?")[0]),
     checks: [
       "cross-origin discovery",
+      "master groups observed redirected variant and I-frame playlist; badge matches",
       "no pre-confirm downloads",
       "deduplication",
       "highest variant",

@@ -28,6 +28,7 @@ export function parse(
     url: base,
     segments: [],
     variants: [],
+    references: [],
     definitions: {},
     diagnostics: [],
     tags: [],
@@ -210,10 +211,24 @@ export function parse(
       if (pending)
         throw new HlsError("INVALID_VARIANT", "变体缺少地址", source);
       pending = attributes(v);
+    } else if (tag === "EXT-X-I-FRAME-STREAM-INF") {
+      const a = attributes(v);
+      if (!a.URI || integer(a.BANDWIDTH ?? "", source) === 0n)
+        throw new HlsError(
+          "INVALID_VARIANT",
+          "关键帧列表缺少有效的 URI 或带宽",
+          source,
+        );
+      result.references.push({ url: httpUrl(a.URI, base), role: "iframe" });
     } else if (tag === "EXT-X-MEDIA") {
       const a = attributes(v);
       if (!a.TYPE || !a["GROUP-ID"] || !a.NAME)
         throw new HlsError("INVALID_GROUP", "媒体组缺少必要属性", source);
+      if (a.URI && ["AUDIO", "VIDEO", "SUBTITLES"].includes(a.TYPE))
+        result.references.push({
+          url: httpUrl(a.URI, base),
+          role: "rendition",
+        });
       groups.set(
         `${a.TYPE}:${a["GROUP-ID"]}`,
         (groups.get(`${a.TYPE}:${a["GROUP-ID"]}`) ?? false) || Boolean(a.URI),
@@ -227,6 +242,7 @@ export function parse(
         if (bandwidth <= 0 || !Number.isFinite(height))
           throw new HlsError("INVALID_VARIANT", "变体带宽无效", source);
         const index = result.variants.length;
+        result.references.push({ url, role: "variant" });
         result.variants.push({
           url,
           bandwidth,
@@ -267,9 +283,9 @@ export function parse(
   }
   if (pending || duration !== undefined || rangeText)
     throw new HlsError("INCOMPLETE_PLAYLIST", "播放列表不完整");
-  if (result.variants.length && result.segments.length)
+  if (result.references.length && result.segments.length)
     throw new HlsError("MIXED_PLAYLIST", "不能混合主列表和媒体列表");
-  result.kind = result.variants.length ? "master" : "media";
+  result.kind = result.references.length ? "master" : "media";
   validateProtocol(result);
   for (const ref of referenced) {
     if (!groups.has(ref.group))

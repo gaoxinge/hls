@@ -41,6 +41,7 @@ export function validateProtocol(playlist: Playlist) {
     "EXT-X-PLAYLIST-TYPE",
   ];
   const masterTags = [
+    "EXT-X-I-FRAME-STREAM-INF",
     "EXT-X-STREAM-INF",
     "EXT-X-MEDIA",
     "EXT-X-SESSION-KEY",

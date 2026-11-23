@@ -1,5 +1,5 @@
 import type { Variant } from "../domain/hls/model";
-import type { Candidate } from "../shared/model";
+import type { VisibleCandidate } from "../shared/model";
 export function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   text = "",
@@ -30,8 +30,9 @@ export function resourceAddress(
   return address;
 }
 export function candidateCard(
-  candidate: Candidate,
+  candidate: VisibleCandidate,
   onStart: (
+    id: string,
     quality: string,
     saveAs: boolean,
     selectedUrl?: string,
@@ -61,6 +62,7 @@ export function candidateCard(
     button.disabled = true;
     try {
       await onStart(
+        candidate.id,
         quality.value === "lowest" ? "lowest" : "best",
         saveAs.checked,
         quality.value.startsWith("http") ? quality.value : undefined,
@@ -97,5 +99,12 @@ export function candidateCard(
   };
   options.append(quality, label, button, inspect);
   card.append(options, error);
+  if (candidate.children?.length) {
+    const details = element("details");
+    details.append(element("summary", "查看已发现的子列表"));
+    for (const child of candidate.children)
+      details.append(candidateCard(child, onStart));
+    card.append(details);
+  }
   return card;
 }
