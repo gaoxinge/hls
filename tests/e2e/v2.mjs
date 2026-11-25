@@ -1,7 +1,14 @@
-import { prepareDownloads, useNativeDownloads } from "./downloads.mjs";
+import { installSaveFilePicker, readSavedFile } from "./downloads.mjs";
 import { chromium } from "@playwright/test";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+  mkdir,
+  stat,
+} from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -44,7 +51,7 @@ const server = createServer((req, res) => {
   }
   if (url.pathname === "/master.m3u8") {
     res.end(
-      '#EXTM3U\n#EXT-X-DEFINE:NAME="file",VALUE="bundle"\n#EXT-X-STREAM-INF:BANDWIDTH=2\n/bad.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1\n/range.m3u8?token=abc',
+      '#EXTM3U\n#EXT-X-DEFINE:NAME="file",VALUE="bundle"\n#EXT-X-STREAM-INF:BANDWIDTH=256000\n/bad.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=128000\n/range.m3u8?sample=range',
     );
     return;
   }
@@ -67,12 +74,12 @@ const server = createServer((req, res) => {
         parts.map((_, i) => `#EXTINF:1,\n/large/${i}`).join("\n");
     } else {
       text +=
-        '#EXT-X-DEFINE:IMPORT="file"\n#EXT-X-DEFINE:QUERYPARAM="token"\n' +
-        `#EXT-X-MAP:URI="/{$file}?token={$token}",BYTERANGE="${init.length}@0"\n`;
+        '#EXT-X-DEFINE:IMPORT="file"\n#EXT-X-DEFINE:QUERYPARAM="sample"\n' +
+        `#EXT-X-MAP:URI="/{$file}?sample={$sample}",BYTERANGE="${init.length}@0"\n`;
       let offset = init.length;
       text += parts
         .map((p, i) => {
-          const tag = `#EXTINF:1,\n#EXT-X-BYTERANGE:${p.length}${i === 0 ? "@" + offset : ""}\n/{$file}?token={$token}`;
+          const tag = `#EXTINF:1,\n#EXT-X-BYTERANGE:${p.length}${i === 0 ? "@" + offset : ""}\n/{$file}?sample={$sample}`;
           offset += p.length;
           return tag;
         })
@@ -137,7 +144,6 @@ async function until(check, timeout = 300000) {
   throw new Error("task timeout");
 }
 try {
-  await prepareDownloads(profile);
   context = await chromium.launchPersistentContext(profile, {
     channel: "chromium",
     headless: true,
@@ -149,6 +155,7 @@ try {
       "--no-sandbox",
     ],
   });
+  await installSaveFilePicker(context);
   let [worker] = context.serviceWorkers();
   worker ??= await context.waitForEvent("serviceworker");
   const id = new URL(worker.url()).host;
@@ -156,7 +163,6 @@ try {
     manager = await context.newPage();
   await manager.goto(`chrome-extension://${id}/manager.html`);
   const cdp = await context.newCDPSession(manager);
-  await useNativeDownloads(context, manager);
   await cdp.send("Performance.enable");
   timer = setInterval(() => {
     void cdp
@@ -214,11 +220,16 @@ try {
     );
     await source.getByRole("button").click();
     await manager.click("#refresh");
-    await manager
-      .locator("#candidates .card")
-      .filter({ hasText: `/${name}.m3u8` })
-      .getByRole("button", { name: "下载", exact: true })
-      .click();
+    const card = manager
+      .locator("#resources tbody tr")
+      .filter({ hasText: `${name}.m3u8` });
+    if (name === "master") {
+      await card.getByRole("combobox").selectOption({ label: "128 kbps" });
+      await manager.evaluate(() => {
+        window.nextSaveName = "课程.第二节.mp4";
+      });
+    }
+    await card.getByRole("button", { name: "下载", exact: true }).click();
     await until(async () => {
       const failed = manager.locator('[data-status="failed"]');
       if (await failed.count()) throw new Error(await failed.innerText());
@@ -228,25 +239,21 @@ try {
       );
     });
     completed++;
-    const downloads = await worker.evaluate(() =>
-      chrome.downloads.search({ state: "complete" }),
+    await card.locator(".progress-link").click();
+    const outputName = await manager.locator("dialog h3").first().innerText();
+    await manager.getByRole("button", { name: "关闭" }).click();
+    assert.match(outputName, /\.mp4$/);
+    assert.match(
+      await manager.evaluate(() => window.suggestedName),
+      /^HLS-.*\.mp4$/,
     );
-    const latest = downloads.sort((a, b) => b.id - a.id)[0];
-    assert.ok(
-      (await manager.locator("#tasks h3").first().innerText()).endsWith(".mp4"),
-    );
-    assert.ok(
-      latest.filename.endsWith(
-        "/" + (await manager.locator("#tasks h3").first().innerText()),
-      ),
-    );
-    assert.equal(latest.mime, "video/mp4");
+    if (name === "master") assert.equal(outputName, "课程.第二节.mp4");
+    const filename = await readSavedFile(manager, outputName, profile);
     const expected = createHash("sha256").update(init);
     if (large) for (let i = 0; i < 128; i++) expected.update(largePart(i));
     else for (const p of parts) expected.update(p);
     const actual = createHash("sha256");
-    for await (const chunk of createReadStream(latest.filename))
-      actual.update(chunk);
+    for await (const chunk of createReadStream(filename)) actual.update(chunk);
     assert.equal(actual.digest("hex"), expected.digest("hex"));
     const ffprobe = JSON.parse(
       execFileSync(
@@ -259,7 +266,7 @@ try {
           "stream=codec_name,codec_type,duration,nb_read_frames",
           "-of",
           "json",
-          latest.filename,
+          filename,
         ],
         { encoding: "utf8" },
       ),
@@ -290,18 +297,21 @@ try {
     );
     execFileSync(
       process.env.FFMPEG ?? "ffmpeg",
-      ["-v", "error", "-i", latest.filename, "-f", "null", "-"],
+      ["-v", "error", "-i", filename, "-f", "null", "-"],
       { stdio: "pipe" },
     );
     result.checks.push({
       name,
-      bytes: latest.fileSize,
+      bytes: (await stat(filename)).size,
       decoded: true,
       streams: ffprobe.streams,
     });
   }
   if (!large) {
-    assert.ok(hits.some((h) => h.path === "/bad.m3u8"));
+    assert.ok(
+      !hits.some((h) => h.path === "/bad.m3u8"),
+      "only fetch the selected bitrate",
+    );
     assert.equal(hits.filter((h) => h.path === "/bundle").length, 5);
     assert.ok(hits.filter((h) => h.path === "/bundle").every((h) => h.range));
   }

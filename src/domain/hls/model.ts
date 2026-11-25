@@ -1,3 +1,4 @@
+import type { MediaType } from "./content-types";
 export interface Source {
   line: number;
   tag: string;
@@ -43,11 +44,15 @@ export interface Variant {
   audio?: string;
   reason?: string;
 }
+export function highestQualityFirst(a: Variant, b: Variant): number {
+  return b.height - a.height || b.bandwidth - a.bandwidth;
+}
 export interface PlaylistReference {
   url: string;
   role: "variant" | "iframe" | "rendition";
 }
 export interface Playlist {
+  contentTypes?: MediaType[];
   kind: "master" | "media";
   url: string;
   segments: Segment[];

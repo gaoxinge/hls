@@ -1,3 +1,5 @@
+import type { MediaType } from "../hls/content-types";
+import type { Variant } from "../hls/model";
 export type Status =
   | "queued"
   | "resolving"
@@ -17,6 +19,9 @@ export interface Task {
   id: string;
   candidateId: string;
   playlistUrl: string;
+  resourceUrl?: string;
+  contentTypes?: MediaType[];
+  chosenVariant?: Pick<Variant, "url" | "label">;
   status: Status;
   createdAt: number;
   updatedAt: number;
@@ -27,7 +32,11 @@ export interface Task {
   fingerprint?: string;
   selectedUrl?: string;
   quality: "best" | "lowest";
-  saveAs: boolean;
+  fileHandle?: FileSystemFileHandle;
+  /** Destination on tasks queued before file selection was introduced. */
+  directory?: FileSystemDirectoryHandle;
+  /** Download preference on tasks queued by earlier versions. */
+  saveAs?: boolean;
   downloadId?: number;
   artifactId?: string;
   finalSize?: number;

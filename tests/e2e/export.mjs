@@ -1,4 +1,4 @@
-import { prepareDownloads, useNativeDownloads } from "./downloads.mjs";
+import { installSaveFilePicker, readSavedFile } from "./downloads.mjs";
 import { chromium } from "@playwright/test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,7 +17,6 @@ const digest = createHash("sha256").update(bytes).digest("hex");
 const profile = await mkdtemp(join(tmpdir(), "hls-export-"));
 let context;
 try {
-  await prepareDownloads(profile);
   context = await chromium.launchPersistentContext(profile, {
     channel: "chromium",
     headless: true,
@@ -27,13 +26,13 @@ try {
       "--no-sandbox",
     ],
   });
+  await installSaveFilePicker(context);
   let [worker] = context.serviceWorkers();
   worker ??= await context.waitForEvent("serviceworker");
   const manager = await context.newPage();
   await manager.goto(
     `chrome-extension://${new URL(worker.url()).host}/manager.html`,
   );
-  await useNativeDownloads(context, manager);
   const network = [];
   context.on("request", (req) => {
     if (/^https?:/.test(req.url())) network.push(req.url());
@@ -43,6 +42,17 @@ try {
       async ({ mode, data, digest }) => {
         const storageKey = mode === "artifact" ? "output.bin" : "video.ts";
         const root = await navigator.storage.getDirectory();
+        if (mode === "artifact") {
+          const chosen = await root.getDirectoryHandle("chosen-directory", {
+            create: true,
+          });
+          const existing = await chosen.getFileHandle("artifact.mp4", {
+            create: true,
+          });
+          const writer = await existing.createWritable();
+          await writer.write("keep existing file");
+          await writer.close();
+        }
         const dir = await (
           await root.getDirectoryHandle(mode, { create: true })
         ).getDirectoryHandle("v2", { create: true });
@@ -64,7 +74,7 @@ try {
           tx.objectStore("tasks").put({
             id: mode,
             candidateId: mode,
-            playlistUrl: "https://example.invalid/list.m3u8",
+            playlistUrl: "http://127.0.0.1/fixture/list.m3u8",
             schemaVersion: 2,
             status: "failed",
             createdAt: Date.now(),
@@ -87,7 +97,7 @@ try {
                 id: "fixture-plan",
                 schemaVersion: 2,
                 format: "mp4",
-                playlistUrl: "https://example.invalid/list.m3u8",
+                playlistUrl: "http://127.0.0.1/fixture/list.m3u8",
                 resources: [],
               },
             });
@@ -111,10 +121,23 @@ try {
       { mode, data: Array.from(bytes), digest },
     );
     await manager.reload();
+    await manager.locator("tr .progress-link").click();
     const card = manager
-      .locator("#tasks .card")
+      .locator("dialog .task-panel")
       .filter({ has: manager.locator("h3", { hasText: `${mode}.ts` }) });
+    if (mode === "artifact")
+      await manager.evaluate(() => {
+        window.nextSaveName = "artifact (1).mp4";
+      });
     await card.getByRole("button", { name: "重新保存", exact: true }).click();
+    if (mode === "missing-plan") {
+      await card.getByText(/旧输出缺少格式/).waitFor();
+      assert.equal(
+        await manager.evaluate(() => window.suggestedName),
+        undefined,
+      );
+      continue;
+    }
     const deadline = Date.now() + 30000;
     let record;
     while (Date.now() < deadline) {
@@ -130,23 +153,36 @@ try {
         db.close();
         return result;
       }, mode);
-      if (["completed", "failed"].includes(record.status)) break;
+      if (
+        record.status === "completed" ||
+        (record.status === "failed" && record.error)
+      )
+        break;
       await new Promise((r) => setTimeout(r, 100));
     }
-    if (mode === "missing-plan") {
-      assert.equal(record.status, "failed");
-      assert.match(record.error, /缺少格式/);
-      assert.equal(record.downloadId, undefined);
-      continue;
-    }
-    assert.equal(record.status, "completed", record.error);
-    const [download] = await worker.evaluate(
-      (id) => chrome.downloads.search({ id }),
-      record.downloadId,
+    assert.equal(
+      await manager.evaluate(() => window.suggestedName),
+      `${mode}.mp4`,
     );
-    assert.ok(download.filename.endsWith(`/${mode}.mp4`));
-    assert.equal(download.mime, "video/mp4");
-    assert.deepEqual(await readFile(download.filename), bytes);
+    assert.equal(record.status, "completed", record.error);
+    assert.equal(
+      record.filename,
+      mode === "artifact" ? "artifact (1).mp4" : `${mode}.mp4`,
+    );
+    if (mode === "artifact")
+      assert.equal(
+        await readFile(
+          await readSavedFile(manager, "artifact.mp4", profile),
+          "utf8",
+        ),
+        "keep existing file",
+      );
+    assert.equal(record.directory, undefined);
+    assert.equal(record.fileHandle, undefined);
+    assert.deepEqual(
+      await readFile(await readSavedFile(manager, record.filename, profile)),
+      bytes,
+    );
     const artifact = await manager.evaluate(async (id) => {
       const req = indexedDB.open("hls-v1", 2);
       const db = await new Promise((resolve) => {
@@ -164,8 +200,8 @@ try {
       artifact.storageKey,
       mode === "legacy" ? "video.ts" : "output.bin",
     );
-    assert.equal(artifact.download.filename, download.filename);
-    assert.equal(artifact.download.mime, download.mime);
+    assert.equal(artifact.download.filename, record.filename);
+    assert.equal(artifact.download.mime, "video/mp4");
   }
   assert.deepEqual(network, [], "cached exports must not re-download media");
   console.log(

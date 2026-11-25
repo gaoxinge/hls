@@ -1,16 +1,18 @@
 import {
   createCandidateInspector,
-  readCandidate,
+  needsInspection,
   trimInspections,
 } from "./candidate-inspection";
 import {
-  pageCandidates,
   selectVisibleCandidates,
   type ObservedCandidate,
 } from "../detection/candidate-groups";
 import { addCandidate, isHls, TTL } from "../detection/candidates";
-import { active, safeError, type Task } from "../shared/model";
-import { tasks, commands, commitCommand } from "../storage/db";
+import { safeError, type VisibleCandidate } from "../shared/model";
+import {
+  openResourceWindow,
+  openDownloadManager,
+} from "../adapters/chrome/extension-windows";
 
 export function startBackground() {
   let queue = Promise.resolve();
@@ -41,52 +43,67 @@ export function startBackground() {
     return s ?? { candidates: [], epochs: {}, notices: {}, requests: {} };
   };
   const save = (s: State) => chrome.storage.session.set({ discovery: s });
-  const badge = async (s: State, tabId: number) => {
-    const n = selectVisibleCandidates(s.candidates, tabId).length;
+  const badge = async (tabId: number, count: number) => {
     await chrome.action
-      .setBadgeText({ tabId, text: n ? String(n) : "" })
+      .setBadgeText({ tabId, text: count ? String(count) : "" })
       .catch(() => {});
     await chrome.action
       .setBadgeBackgroundColor({ tabId, color: "#22745c" })
       .catch(() => {});
   };
   const inspect = createCandidateInspector();
-  async function listCandidates(tabId?: number) {
-    const snapshot = await enqueue(state);
-    const pages = pageCandidates(snapshot.candidates, tabId);
-    const pending = Array.from(pages.values())
-      .filter((page) => page.length > 1)
-      .flat()
-      .filter(
-        (c) =>
-          c.status >= 200 &&
-          c.status < 300 &&
-          (!c.inspection || c.inspection.until <= Date.now()),
-      );
-    const deadline = Date.now() + 4000;
-    const updates = new Map(
-      await Promise.all(
-        pending.map(async (c) => [c.id, await inspect(c, deadline)] as const),
-      ),
-    );
-    return enqueue(async () => {
-      const s = await state();
+  const refreshing = new Map<number, Promise<VisibleCandidate[]>>();
+  async function resolveTab(tabId: number): Promise<VisibleCandidate[]> {
+    for (;;) {
+      const snapshot = await enqueue(state);
       const now = Date.now();
-      s.candidates = s.candidates.filter((c) => now - c.lastSeen < TTL);
-      // Navigation creates new candidate IDs. Only commit to a still-live observation.
-      for (const c of s.candidates) {
-        const result = updates.get(c.id);
-        if (result && c.status >= 200 && c.status < 300) c.inspection = result;
-      }
-      trimInspections(s.candidates, now);
-      await save(s);
-      const tabs =
-        tabId === undefined
-          ? new Set(snapshot.candidates.map((c) => c.tabId))
-          : [tabId];
-      await Promise.all(Array.from(tabs, (id) => badge(s, id)));
-      return selectVisibleCandidates(s.candidates, tabId, now);
-    });
+      const pending = snapshot.candidates.filter(
+        (c) =>
+          c.tabId === tabId &&
+          now - c.lastSeen < TTL &&
+          needsInspection(c, now),
+      );
+      const deadline = now + 4000;
+      const updates = new Map(
+        await Promise.all(
+          pending.map(async (c) => [c.id, await inspect(c, deadline)] as const),
+        ),
+      );
+      const rows = await enqueue(async () => {
+        const s = await state();
+        const now = Date.now();
+        s.candidates = s.candidates.filter((c) => now - c.lastSeen < TTL);
+        const page = s.candidates.filter((c) => c.tabId === tabId);
+        for (const c of page) {
+          const result = updates.get(c.id);
+          if (result && needsInspection(c, now)) c.inspection = result;
+        }
+        // A new possible parent arrived during a read. Inspect it before publishing.
+        const more = page.some(
+          (c) => needsInspection(c, now) && !updates.has(c.id),
+        );
+        trimInspections(s.candidates, now);
+        await save(s);
+        if (more) return;
+        const visible = selectVisibleCandidates(s.candidates, tabId, now);
+        await badge(tabId, visible.length);
+        return visible;
+      });
+      if (rows) return rows;
+    }
+  }
+  function refreshTab(tabId: number) {
+    const current = refreshing.get(tabId);
+    if (current) return current;
+    const job = resolveTab(tabId).finally(() => refreshing.delete(tabId));
+    refreshing.set(tabId, job);
+    return job;
+  }
+  async function listCandidates(tabId?: number) {
+    if (tabId !== undefined) return refreshTab(tabId);
+    const snapshot = await enqueue(state);
+    const tabs = new Set(snapshot.candidates.map((c) => c.tabId));
+    return (await Promise.all(Array.from(tabs, refreshTab))).flat();
   }
   async function discover(d: chrome.webRequest.OnHeadersReceivedDetails) {
     if (
@@ -135,7 +152,13 @@ export function startBackground() {
         Math.max(60000, Number(settings.cooldown) || 60000);
     if (notify) s.notices[noticeKey] = now;
     await save(s);
-    await badge(s, d.tabId);
+    const page = s.candidates.filter((c) => c.tabId === d.tabId);
+    if (page.length > 1 && page.some((c) => needsInspection(c, now))) {
+      // Manifest reads run outside the event queue so navigation and redirects can proceed.
+      void refreshTab(d.tabId).catch(() => console.warn("HLS 清单归并失败"));
+    } else {
+      await badge(d.tabId, selectVisibleCandidates(page, d.tabId, now).length);
+    }
     if (notify && settings.notifications)
       await chrome.notifications
         .create(`hls:${d.tabId}`, {
@@ -161,7 +184,7 @@ export function startBackground() {
           s.candidates = s.candidates.filter((c) => c.tabId !== d.tabId);
           for (const key of Object.keys(s.notices))
             if (key.startsWith(`${d.tabId}:`)) delete s.notices[key];
-          await badge(s, d.tabId);
+          await badge(d.tabId, 0);
         }
         if (isHls(d.url) || d.type === "main_frame") {
           s.requests[d.requestId] = {
@@ -230,6 +253,9 @@ export function startBackground() {
       await save(s);
     }),
   );
+  chrome.action.onClicked.addListener((tab) =>
+    run(() => openResourceWindow(tab)),
+  );
   chrome.notifications.onClicked.addListener((id) => {
     if (/^hls:\d+$/.test(id))
       void chrome.tabs.create({
@@ -250,16 +276,7 @@ export function startBackground() {
           Number.isInteger(message.tabId) ? message.tabId : undefined,
         );
       }
-      if (message.type === "INSPECT_CANDIDATE") {
-        const candidate = (await enqueue(state)).candidates.find(
-          (c) => c.id === message.id && Date.now() - c.lastSeen < TTL,
-        );
-        if (!candidate) throw new Error("候选已失效");
-        return (
-          await readCandidate(candidate.url, new AbortController().signal)
-        ).variants;
-      }
-      if (message.type === "START_TASK") {
+      if (message.type === "GET_DOWNLOAD_CANDIDATE") {
         return enqueue(async () => {
           if (typeof message.id !== "string") throw new Error("候选无效");
           const candidate = (await state()).candidates.find(
@@ -267,61 +284,14 @@ export function startBackground() {
           );
           if (!candidate || candidate.status < 200 || candidate.status >= 300)
             throw new Error("候选已失效，请刷新源网页");
-          const receipt =
-            typeof message.commandId === "string"
-              ? await commands.get(message.commandId)
-              : undefined;
-          let task = receipt ? await tasks.get(receipt.taskId) : undefined;
-          task ??= (await tasks.all()).find(
-            (t) => t.candidateId === candidate.id && active(t.status),
-          );
-          if (!task) {
-            const now = Date.now();
-            task = {
-              id: crypto.randomUUID(),
-              candidateId: candidate.id,
-              playlistUrl: candidate.url,
-              status: "queued",
-              createdAt: now,
-              updatedAt: now,
-              total: 0,
-              done: 0,
-              bytes: 0,
-              filename: `HLS-${new Date(now).toISOString().replace(/[:.]/g, "-")}.ts`,
-              quality: message.quality === "lowest" ? "lowest" : "best",
-              saveAs: message.saveAs === true,
-              selectedUrl:
-                typeof message.selectedUrl === "string"
-                  ? message.selectedUrl
-                  : undefined,
-            } satisfies Task;
-            const next = task;
-            await commitCommand(
-              typeof message.commandId === "string"
-                ? message.commandId
-                : crypto.randomUUID(),
-              task.id,
-              "start",
-              (current) => current ?? next,
-            );
-          }
-          const managers = await chrome.runtime.getContexts({
-            contextTypes: [chrome.runtime.ContextType.TAB],
-          });
-          const manager = managers.find(
-            (context) =>
-              context.documentUrl &&
-              new URL(context.documentUrl).pathname.replace(/^\/+/, "") ===
-                "manager.html",
-          );
-          if (manager && manager.tabId >= 0)
-            await chrome.tabs.update(manager.tabId, { active: true });
-          else
-            await chrome.tabs.create({
-              url: chrome.runtime.getURL("manager.html"),
-            });
-          return task.id;
+          return { id: candidate.id, url: candidate.url };
         });
+      }
+      if (message.type === "OPEN_MANAGER") {
+        const tabId = Number.isInteger(message.tabId) ? message.tabId : -1;
+        return enqueue(() =>
+          openDownloadManager(tabId, sender.tab?.incognito ?? false),
+        );
       }
       throw new Error("未知操作");
     }

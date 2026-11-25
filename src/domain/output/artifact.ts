@@ -13,7 +13,7 @@ export interface OutputArtifact {
   baseName: string;
   size: number;
   sha256: string;
-  download?: { id: number; filename: string; mime: string };
+  download?: { id?: number; filename: string; mime: string };
 }
 export const OUTPUT_STORAGE_KEY = "output.bin";
 export function validateArtifact(artifact: OutputArtifact) {

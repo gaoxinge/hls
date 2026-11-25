@@ -1,6 +1,10 @@
 import type { PlaylistParser } from "../ports/parser";
 import { assertExecutable } from "../protocol/capabilities";
-import { HlsError, type Playlist } from "../domain/hls/model";
+import {
+  highestQualityFirst,
+  HlsError,
+  type Playlist,
+} from "../domain/hls/model";
 import type { ReadResource } from "../ports/transport";
 export function createResolver(
   read: ReadResource,
@@ -36,9 +40,7 @@ export function createResolver(
         await probe?.(playlist, signal);
         return playlist;
       }
-      const ordered = [...playlist.variants].sort(
-        (a, b) => b.height - a.height || b.bandwidth - a.bandwidth,
-      );
+      const ordered = [...playlist.variants].sort(highestQualityFirst);
       if (quality === "lowest") ordered.reverse();
       const candidates = manual
         ? ordered.filter((v) => v.url === manual)

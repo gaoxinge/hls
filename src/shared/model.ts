@@ -1,3 +1,5 @@
+import type { Variant } from "../domain/hls/model";
+import type { MediaType } from "../domain/hls/content-types";
 export { active } from "../domain/task/model";
 export type { Task, Status } from "../domain/task/model";
 export interface Candidate {
@@ -9,8 +11,15 @@ export interface Candidate {
   lastSeen: number;
   status: number;
 }
+export type VariantOption = Pick<
+  Variant,
+  "url" | "label" | "supported" | "reason"
+>;
 export interface VisibleCandidate extends Candidate {
-  children?: Candidate[];
+  contentTypes?: MediaType[];
+  groupedCandidates?: Pick<Candidate, "id" | "url">[];
+  variants?: VariantOption[];
+  children?: VisibleCandidate[];
 }
 export type {
   KeyContext,

@@ -1,4 +1,9 @@
 import { validateProtocol } from "../../protocol/rules";
+import {
+  declaredMediaTypes,
+  mediaTypes,
+  type MediaType,
+} from "../../domain/hls/content-types";
 import { Parser } from "m3u8-parser";
 import { httpUrl } from "../../shared/model";
 import { attributes, expand, integer } from "../../protocol/lexical";
@@ -45,6 +50,10 @@ export function parse(
     timeline = 0,
     keyIndex = 0;
   const normalized: string[] = [];
+  const contentTypes = new Set<MediaType>();
+  function recordTypes(tag: string, attrs: Record<string, string>) {
+    for (const type of declaredMediaTypes(tag, attrs)) contentTypes.add(type);
+  }
   const singletons = new Set<string>();
   const groups = new Map<string, boolean>();
   const referenced: Array<{ index: number; group: string }> = [];
@@ -211,8 +220,12 @@ export function parse(
       if (pending)
         throw new HlsError("INVALID_VARIANT", "变体缺少地址", source);
       pending = attributes(v);
+      recordTypes(tag, pending);
+    } else if (tag === "EXT-X-I-FRAMES-ONLY") {
+      recordTypes(tag, {});
     } else if (tag === "EXT-X-I-FRAME-STREAM-INF") {
       const a = attributes(v);
+      recordTypes(tag, a);
       if (!a.URI || integer(a.BANDWIDTH ?? "", source) === 0n)
         throw new HlsError(
           "INVALID_VARIANT",
@@ -222,6 +235,7 @@ export function parse(
       result.references.push({ url: httpUrl(a.URI, base), role: "iframe" });
     } else if (tag === "EXT-X-MEDIA") {
       const a = attributes(v);
+      recordTypes(tag, a);
       if (!a.TYPE || !a["GROUP-ID"] || !a.NAME)
         throw new HlsError("INVALID_GROUP", "媒体组缺少必要属性", source);
       if (a.URI && ["AUDIO", "VIDEO", "SUBTITLES"].includes(a.TYPE))
@@ -286,6 +300,7 @@ export function parse(
   if (result.references.length && result.segments.length)
     throw new HlsError("MIXED_PLAYLIST", "不能混合主列表和媒体列表");
   result.kind = result.references.length ? "master" : "media";
+  result.contentTypes = mediaTypes.filter((type) => contentTypes.has(type));
   validateProtocol(result);
   for (const ref of referenced) {
     if (!groups.has(ref.group))

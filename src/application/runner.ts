@@ -38,6 +38,23 @@ export function createRunner(deps: RunnerPorts, changed: () => void) {
             if (task.status !== "queued" && active(task.status)) {
               if (
                 task.status === "exporting" &&
+                (task.fileHandle || task.directory) &&
+                task.artifactId
+              ) {
+                const receipt = (await artifacts.get(task.artifactId))
+                  ?.download;
+                if (receipt) {
+                  task.filename = receipt.filename;
+                  task.status = "completed";
+                  delete task.directory;
+                  delete task.fileHandle;
+                  await tasks.put(task);
+                  await cleanFiles(task.id);
+                  continue;
+                }
+              }
+              if (
+                task.status === "exporting" &&
                 task.downloadId !== undefined
               ) {
                 const [item] = await deps.exporter.search({
@@ -64,6 +81,8 @@ export function createRunner(deps: RunnerPorts, changed: () => void) {
                   await deps.exporter.cancel(item.id).catch(() => {});
               }
               task.status = "interrupted";
+              delete task.directory;
+              delete task.fileHandle;
               await tasks.put(task);
             }
             if (
@@ -97,6 +116,8 @@ export function createRunner(deps: RunnerPorts, changed: () => void) {
           const task = await tasks.get(id);
           if (!task || !active(task.status)) return;
           task.status = "cancelled";
+          delete task.directory;
+          delete task.fileHandle;
           await tasks.put(task);
           await cleanFiles(id);
           this.changed();
@@ -183,7 +204,7 @@ export function createRunner(deps: RunnerPorts, changed: () => void) {
             throw new Error("缓存文件不完整，请清理任务后重新下载");
           await artifacts.put(artifact);
           task.artifactId = artifact.id;
-          task.filename = artifactFilename(artifact);
+          task.filename = task.fileHandle?.name ?? artifactFilename(artifact);
           task.status = "exporting";
           await update();
           artifact.download = await deps.exporter.exportFile(
@@ -241,10 +262,9 @@ export function createRunner(deps: RunnerPorts, changed: () => void) {
           if (task.fingerprint && task.fingerprint !== fingerprint)
             throw new Error("播放列表已变化，请清理此任务并重新下载");
           await plans.put(task.id, plan);
-          task.filename = outputFilename(
-            outputBaseName(task.filename),
-            plan.format,
-          );
+          task.filename =
+            task.fileHandle?.name ??
+            outputFilename(outputBaseName(task.filename), plan.format);
           task.fingerprint = fingerprint;
           task.selectedUrl = playlist.url;
           task.total = playlist.segments.length;
@@ -300,7 +320,7 @@ export function createRunner(deps: RunnerPorts, changed: () => void) {
           task.finalSize = artifact.size;
           task.finalDigest = artifact.sha256;
           task.artifactId = artifact.id;
-          task.filename = artifactFilename(artifact);
+          task.filename = task.fileHandle?.name ?? artifactFilename(artifact);
           task.status = "exporting";
           await update();
           artifact.download = await deps.exporter.exportFile(
@@ -314,12 +334,17 @@ export function createRunner(deps: RunnerPorts, changed: () => void) {
         }
         task.status = "completed";
         task.error = undefined;
-        await update();
+        delete task.directory;
+        delete task.fileHandle;
+        // Once the destination write has committed, a late cancel cannot undo it.
+        await tasks.put(task);
         await cleanFiles(task.id).catch(() => {
           /* Cleanup can be retried from the manager. */
         });
       } catch (error) {
         task.status = running.cancelled ? "cancelled" : "failed";
+        delete task.directory;
+        delete task.fileHandle;
         task.error = running.cancelled ? undefined : safeError(error);
         await update();
         if (running.cancelled) await cleanFiles(task.id);

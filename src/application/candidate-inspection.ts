@@ -1,17 +1,18 @@
 import { parse } from "../adapters/parser/m3u8";
+import { highestQualityFirst } from "../domain/hls/model";
 import { request } from "../network/http";
 import type {
   Inspection,
   ObservedCandidate,
 } from "../detection/candidate-groups";
 
-export async function readCandidate(
-  url: string,
-  signal: AbortSignal,
-  credentials: RequestCredentials = "include",
-) {
+async function readCandidate(url: string, signal: AbortSignal) {
   const response = await request(url, 2 * 1024 * 1024, signal, (input, init) =>
-    fetch(input, { ...init, credentials, referrerPolicy: "no-referrer" }),
+    fetch(input, {
+      ...init,
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+    }),
   );
   return parse(
     new TextDecoder("utf-8", { fatal: true }).decode(response.bytes),
@@ -19,7 +20,18 @@ export async function readCandidate(
   );
 }
 
-// Popup and manager share the same three workers and in-flight reads.
+export function needsInspection(c: ObservedCandidate, now: number) {
+  return (
+    c.status >= 200 &&
+    c.status < 300 &&
+    (!c.inspection ||
+      c.inspection.until <= now ||
+      (c.inspection.kind !== "unknown" &&
+        (!c.inspection.variants || !c.inspection.contentTypes)))
+  );
+}
+
+// Discovery, popup and manager share the same three workers and in-flight reads.
 export function createCandidateInspector(read = readCandidate) {
   const lanes = Array.from({ length: 3 }, () => Promise.resolve());
   const pending = new Map<string, Promise<Inspection | undefined>>();
@@ -36,12 +48,20 @@ export function createCandidateInspector(read = readCandidate) {
           const playlist = await read(
             candidate.url,
             AbortSignal.timeout(remaining),
-            "omit",
           );
           return {
             until: Date.now() + 5 * 60_000,
             kind: playlist.kind,
+            contentTypes: playlist.contentTypes,
             references: [...new Set(playlist.references.map((ref) => ref.url))],
+            variants: [...playlist.variants]
+              .sort(highestQualityFirst)
+              .map(({ url, label, supported, reason }) => ({
+                url,
+                label,
+                supported,
+                reason,
+              })),
             showChildren:
               playlist.kind === "master" &&
               (!playlist.variants.length ||
@@ -70,10 +90,7 @@ export function trimInspections(candidates: ObservedCandidate[], now: number) {
   )) {
     const inspection = candidate.inspection;
     if (!inspection) continue;
-    const size = inspection.references.reduce(
-      (n, url) => n + url.length + 4,
-      0,
-    );
+    const size = JSON.stringify(inspection).length;
     if (inspection.until <= now || chars + size > 1024 * 1024)
       delete candidate.inspection;
     else chars += size;

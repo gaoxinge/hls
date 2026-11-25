@@ -1,10 +1,16 @@
-import type { Candidate, VisibleCandidate } from "../shared/model";
+import type {
+  Candidate,
+  VariantOption,
+  VisibleCandidate,
+} from "../shared/model";
 import { TTL } from "./candidates";
 
 export interface Inspection {
+  contentTypes?: VisibleCandidate["contentTypes"];
   until: number;
   kind: "master" | "media" | "unknown";
   references: string[];
+  variants?: VariantOption[];
   showChildren?: boolean;
 }
 
@@ -13,7 +19,7 @@ export interface ObservedCandidate extends Candidate {
   inspection?: Inspection;
 }
 
-export function pageCandidates(
+function pageCandidates(
   candidates: ObservedCandidate[],
   tabId?: number,
   now = Date.now(),
@@ -30,9 +36,21 @@ export function pageCandidates(
   return pages;
 }
 
-function asCandidate(c: ObservedCandidate): Candidate {
+function asCandidate(c: ObservedCandidate, now: number): VisibleCandidate {
   const { id, tabId, epoch, url, firstSeen, lastSeen, status } = c;
-  return { id, tabId, epoch, url, firstSeen, lastSeen, status };
+  const inspection =
+    c.inspection && c.inspection.until > now ? c.inspection : undefined;
+  return {
+    id,
+    tabId,
+    epoch,
+    url,
+    firstSeen,
+    lastSeen,
+    status,
+    variants: inspection?.variants,
+    contentTypes: inspection?.contentTypes,
+  };
 }
 
 function visibleOnPage(
@@ -55,7 +73,8 @@ function visibleOnPage(
     }
   }
   const hidden = new Set<string>();
-  const children = new Map<string, Candidate[]>();
+  const children = new Map<string, VisibleCandidate[]>();
+  const grouped = new Map<string, Pick<Candidate, "id" | "url">[]>();
   for (const parent of masters) {
     const matches = new Set<ObservedCandidate>();
     for (const url of parent.inspection!.references) {
@@ -65,13 +84,22 @@ function visibleOnPage(
         matches.add(child);
       }
     }
+    if (matches.size)
+      grouped.set(
+        parent.id,
+        Array.from(matches, ({ id, url }) => ({ id, url })),
+      );
     if (parent.inspection!.showChildren && matches.size)
-      children.set(parent.id, Array.from(matches, asCandidate));
+      children.set(
+        parent.id,
+        Array.from(matches, (c) => asCandidate(c, now)),
+      );
   }
   return page
     .filter((c) => !hidden.has(c.id))
     .map((c) => ({
-      ...asCandidate(c),
+      ...asCandidate(c, now),
+      groupedCandidates: grouped.get(c.id),
       ...(children.has(c.id) ? { children: children.get(c.id) } : {}),
     }));
 }

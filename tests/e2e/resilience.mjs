@@ -1,5 +1,9 @@
-import { prepareDownloads, useNativeDownloads } from "./downloads.mjs";
-import { chromium } from "@playwright/test";
+import {
+  installSaveFilePicker,
+  readSavedFile,
+  savedNames,
+} from "./downloads.mjs";
+import { chromium, expect } from "@playwright/test";
 import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
@@ -73,7 +77,6 @@ await new Promise((r) => server.listen(0, "127.0.0.1", r));
 let context;
 let metricsTimer;
 try {
-  await prepareDownloads(profile);
   context = await chromium.launchPersistentContext(profile, {
     channel: "chromium",
     headless: true,
@@ -85,6 +88,7 @@ try {
       "--no-sandbox",
     ],
   });
+  await installSaveFilePicker(context);
   let [worker] = context.serviceWorkers();
   if (!worker) worker = await context.waitForEvent("serviceworker");
   const id = new URL(worker.url()).host;
@@ -94,19 +98,25 @@ try {
   await source.click("#play");
   let manager = await context.newPage();
   await manager.goto(managerUrl);
-  await useNativeDownloads(context, manager);
-  await manager.waitForSelector("#candidates button");
+  await manager.waitForSelector("#resources fieldset button");
+  const tiers = manager.getByRole("combobox", { name: "下载档位" });
+  assert.deepEqual(await tiers.locator("option").allTextContents(), ["默认"]);
+  assert.ok(await tiers.isDisabled());
   await manager
-    .locator("#candidates button")
+    .locator("#resources fieldset button")
     .filter({ hasText: /^下载$/ })
     .click();
   await until(
     async () =>
-      parseInt(await manager.locator("#tasks .card p").first().textContent()) >=
-      4,
+      parseInt(
+        await manager
+          .locator("#resources .progress-link")
+          .first()
+          .textContent(),
+      ) >= 4,
   );
   const taskId = await manager
-    .locator("#tasks .card")
+    .locator("tr[data-task-id]")
     .first()
     .getAttribute("data-task-id");
   const before = Array.from({ length: 4 }, (_, i) => hits.get(`/slow/${i}`));
@@ -128,8 +138,9 @@ try {
     await writer.write(bytes);
     await writer.close();
   }, taskId);
+  await manager.locator(`tr[data-task-id="${taskId}"] .progress-link`).click();
   await manager
-    .locator(`[data-task-id="${taskId}"]`)
+    .locator(`dialog [data-task-id="${taskId}"]`)
     .getByRole("button", { name: "恢复 / 重试" })
     .click();
   await manager.waitForSelector(
@@ -141,38 +152,49 @@ try {
     before.map((n, i) => (i === 1 ? n + 1 : n)),
     "valid committed segments reused; same-size corruption redownloaded",
   );
-  const completed = await worker.evaluate(() =>
-    chrome.downloads.search({ state: "complete" }),
+  await manager.getByRole("button", { name: "关闭" }).click();
+  const [name] = await savedNames(manager);
+  assert.match(name, /\.ts$/);
+  assert.deepEqual(
+    await readFile(await readSavedFile(manager, name, profile)),
+    Buffer.concat(small),
   );
-  assert.match(completed[0].filename, /\.ts$/);
-  assert.deepEqual(await readFile(completed[0].filename), Buffer.concat(small));
   // Queue a new candidate, then cancel its owner from the same manager.
   await source.goto(`http://127.0.0.1:${server.address().port}/#/cancel.m3u8`);
   await source.click("#play");
   await manager.click("#refresh");
   await manager
-    .locator("#candidates .card")
-    .filter({ hasText: "/cancel.m3u8" })
+    .locator("#resources tbody tr")
+    .filter({ hasText: "cancel.m3u8" })
     .getByRole("button", { name: "下载", exact: true })
     .click();
   await manager.waitForSelector('[data-status="downloading"]');
+  assert.ok(await manager.locator(".activity-hint").isVisible());
   const observer = await context.newPage();
   await observer.goto(managerUrl);
+  await observer.locator('[data-status="downloading"] .progress-link').click();
   await observer
-    .locator('[data-status="downloading"]')
+    .getByRole("dialog")
     .getByRole("button", { name: "取消", exact: true })
     .click();
   await manager.waitForSelector('[data-status="cancelled"]');
   await observer.close();
-  assert.equal(
-    (
-      await worker.evaluate(() =>
-        chrome.downloads.search({ state: "complete" }),
-      )
-    ).length,
-    1,
-    "cancel does not export",
-  );
+  assert.equal((await savedNames(manager)).length, 1, "cancel does not export");
+  if (!large) {
+    const row = manager.getByRole("row").filter({ hasText: "cancel.m3u8" });
+    const cancelledId = await row.getAttribute("data-task-id");
+    await row.getByRole("button", { name: "下载", exact: true }).click();
+    await expect(row).not.toHaveAttribute("data-task-id", cancelledId);
+    const currentId = await row.getAttribute("data-task-id");
+    await row.locator(".progress-link").click();
+    const dialog = manager.getByRole("dialog");
+    const panel = dialog.locator(".task-panel");
+    await expect(panel).toHaveCount(1);
+    await expect(panel).toHaveAttribute("data-task-id", currentId);
+    await expect(panel).toContainText("已下载", { timeout: 60000 });
+    await expect(dialog.getByRole("progressbar")).toHaveCount(1);
+    await dialog.getByRole("button", { name: "关闭" }).click();
+  }
   const cdp = await context.newCDPSession(manager);
   const version = await cdp.send("Browser.getVersion");
   const result = {
@@ -253,8 +275,8 @@ try {
     await source.click("#play");
     await manager.click("#refresh");
     await manager
-      .locator("#candidates .card")
-      .filter({ hasText: "/large.m3u8" })
+      .locator("#resources tbody tr")
+      .filter({ hasText: "large.m3u8" })
       .getByRole("button", { name: "下载", exact: true })
       .click();
     await until(
@@ -264,17 +286,18 @@ try {
     );
     clearInterval(metricsTimer);
     metricsTimer = undefined;
-    const downloads = await worker.evaluate(() =>
-      chrome.downloads.search({ state: "complete" }),
-    );
-    const item = downloads.find((d) => d.fileSize === 8460000 * 128);
-    assert.ok(item, "large file completed");
-    assert.match(item.filename, /\.ts$/);
+    await manager
+      .getByRole("row")
+      .filter({ hasText: "large.m3u8" })
+      .locator(".progress-link")
+      .click();
+    const largeName = await manager.locator("dialog h3").first().innerText();
+    const filename = await readSavedFile(manager, largeName, profile);
+    assert.match(filename, /\.ts$/);
     const expected = createHash("sha256");
     for (let i = 0; i < 128; i++) expected.update(largePart(i));
     const actual = createHash("sha256");
-    for await (const chunk of createReadStream(item.filename))
-      actual.update(chunk);
+    for await (const chunk of createReadStream(filename)) actual.update(chunk);
     assert.equal(actual.digest("hex"), expected.digest("hex"));
     const mediaInfo = JSON.parse(
       execFileSync(
@@ -287,7 +310,7 @@ try {
           "stream=codec_type,nb_read_frames",
           "-of",
           "json",
-          item.filename,
+          filename,
         ],
         { encoding: "utf8" },
       ),
@@ -298,7 +321,7 @@ try {
     );
     execFileSync(
       process.env.FFMPEG ?? "ffmpeg",
-      ["-v", "error", "-i", item.filename, "-f", "null", "-"],
+      ["-v", "error", "-i", filename, "-f", "null", "-"],
       { stdio: "pipe" },
     );
     Object.assign(result, {

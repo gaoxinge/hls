@@ -50,4 +50,4 @@ for (const format of ["ts", "fmp4"]) {
     { stdio: "inherit" },
   );
 }
-console.log(`Generated ${count}s H.264/AAC fixtures with ${ffmpeg}`);
+console.log(`Generated ${count}s of H.264/AAC test media`);

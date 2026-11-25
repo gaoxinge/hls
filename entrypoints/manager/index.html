@@ -7,28 +7,30 @@
   </head>
   <body>
     <main>
-      <header>
-        <div>
-          <h1>下载管理</h1>
+      <header class="page-header">
+        <div class="page-title">
+          <img src="/icon/48.png" width="32" height="32" alt="" />
+          <h1>HLS 下载管理</h1>
         </div>
-        <button id="refresh" class="secondary">刷新候选</button>
+        <button id="refresh" class="secondary">刷新资源</button>
       </header>
-      <p class="hint">
-        下载和保存期间请保持此页面打开。关闭页面会中断任务，重新打开后可恢复。
-      </p>
-      <label
-        ><input type="checkbox" id="notifications" />
-        发现视频时显示系统通知</label
-      >
       <p id="error" class="error" role="alert"></p>
-      <h2>下载任务</h2>
-      <section id="tasks" aria-live="polite"></section>
-      <h2>网页中的候选视频</h2>
-      <section id="candidates"></section>
-      <p>
-        v2 支持已结束的 TS 和兼容 fMP4、字节范围及
-        AES-128。暂不支持直播、独立音轨合流、不连续时间线或 DRM。
+      <section id="resources" aria-label="资源列表"></section>
+      <p class="activity-hint">
+        下载和保存期间请保持此页打开。任务中断后可在进度详情中恢复。
       </p>
+      <footer class="preferences">
+        <label
+          ><input type="checkbox" id="notifications" />发现资源时通知我</label
+        >
+        <details>
+          <summary>支持的格式</summary>
+          <p>
+            支持已结束的 TS 和兼容 fMP4 点播流、字节范围及 AES-128
+            加密。暂不支持直播、独立音轨合流、不连续时间线或 DRM。
+          </p>
+        </details>
+      </footer>
     </main>
     <script type="module" src="./main.ts"></script>
   </body>

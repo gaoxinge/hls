@@ -4,6 +4,7 @@ import {
   type OutputArtifact,
 } from "../../domain/output/artifact";
 import type { Task } from "../../shared/model";
+import { writeToDirectory } from "./directory-export";
 export async function exportFile(
   task: Task,
   file: File,
@@ -18,6 +19,23 @@ export async function exportFile(
     file.size !== artifact.size
   )
     throw new Error("导出产物与任务或文件不匹配");
+  if (task.fileHandle) {
+    const name = task.fileHandle.name;
+    if (!name.toLowerCase().endsWith("." + artifact.formatId))
+      throw new Error(
+        `实际输出格式为 ${artifact.formatId}，请点击“重新保存”选择文件名`,
+      );
+    signal.throwIfAborted();
+    const stream = await task.fileHandle.createWritable();
+    await file.stream().pipeTo(stream, { signal });
+    task.filename = name;
+    return { filename: name, mime: outputFormats[artifact.formatId].mimeType };
+  }
+  if (task.directory) {
+    const name = await writeToDirectory(task.directory, filename, file, signal);
+    task.filename = name;
+    return { filename: name, mime: outputFormats[artifact.formatId].mimeType };
+  }
   const blob = file.slice(
     0,
     file.size,
